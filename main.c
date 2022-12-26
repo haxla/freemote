@@ -46,13 +46,20 @@
  *
  * This file contains is the source code for a sample application using the HID, Battery and Device
  * Information Services for implementing a simple keyboard functionality.
- * Pressing Button 0 will send text 'hello' to the connected peer. On receiving output report,
- * it toggles the state of LED 2 on the mother board based on whether or not Caps Lock is on.
+ * Pressing Center Button will send a "Play/Pause" keycode to the connected peer. 
+ * Long-pressing Center Button will send a "Alt-Tab" keycode to the connected peer (should switch Apps on the peer)
+ * Pressing Plus Button will send a "Volume Up"
+ * Long-pressing Plus Button will send a 'N' keycode to the connected peer (switch to Next in VLC Playlist)
+ * Pressing Minus Button will send a "Volume Up"
+ * Long-pressing Minus Button will send a 'P' keycode to the connected peer (switch to Previous in VLC Playlist)
+ *
+ * Application accepts pairing requests from any peer device
+ * Application will enter Sleep mode if no peer connects within [APP_ADV_FAST_DURATION + APP_ADV_SLOW_DURATION]
+ * Erase Bonds by pressing Center Button during Sleep mode (blinking blue if not bonded, green if bonded)
+ *
  * This application uses the @ref app_scheduler.
  *
- * Also it would accept pairing requests from any peer device.
  */
-
 #include <stdint.h>
 #include <string.h>
 #include "nordic_common.h"
@@ -91,13 +98,13 @@
 
 #define SHIFT_BUTTON_ID                     1                                          /**< Button used as 'SHIFT' Key. */
 
-#define DEVICE_NAME                         "Nordic_Keyboard"                          /**< Name of device. Will be included in the advertising data. */
-#define MANUFACTURER_NAME                   "NordicSemiconductor"                      /**< Manufacturer. Will be passed to Device Information Service. */
+#define DEVICE_NAME                         "Mini Remote"                              /**< Name of device. Will be included in the advertising data. */
+#define MANUFACTURER_NAME                   "unknown"                                  /**< Manufacturer. Will be passed to Device Information Service. */
 
 #define APP_BLE_OBSERVER_PRIO               3                                          /**< Application's BLE observer priority. You shouldn't need to modify this value. */
 #define APP_BLE_CONN_CFG_TAG                1                                          /**< A tag identifying the SoftDevice BLE configuration. */
 
-#define BATTERY_LEVEL_MEAS_INTERVAL         APP_TIMER_TICKS(2000)                      /**< Battery level measurement interval (ticks). */
+#define BATTERY_LEVEL_MEAS_INTERVAL         APP_TIMER_TICKS(5000)                      /**< Battery level measurement interval (ticks). */
 #define MIN_BATTERY_LEVEL                   81                                         /**< Minimum simulated battery level. */
 #define MAX_BATTERY_LEVEL                   100                                        /**< Maximum simulated battery level. */
 #define BATTERY_LEVEL_INCREMENT             1                                          /**< Increment between each simulated battery level measurement. */
@@ -110,8 +117,8 @@
 #define APP_ADV_FAST_INTERVAL               0x0028                                     /**< Fast advertising interval (in units of 0.625 ms. This value corresponds to 25 ms.). */
 #define APP_ADV_SLOW_INTERVAL               0x0C80                                     /**< Slow advertising interval (in units of 0.625 ms. This value corrsponds to 2 seconds). */
 
-#define APP_ADV_FAST_DURATION               3000                                       /**< The advertising duration of fast advertising in units of 10 milliseconds. */
-#define APP_ADV_SLOW_DURATION               18000                                      /**< The advertising duration of slow advertising in units of 10 milliseconds. */
+#define APP_ADV_FAST_DURATION               1000                                       /**< The advertising duration of fast advertising in units of 10 milliseconds. */
+#define APP_ADV_SLOW_DURATION               1000                                      /**< The advertising duration of slow advertising in units of 10 milliseconds. */
 
 
 /*lint -emacro(524, MIN_CONN_INTERVAL) // Loss of precision */
@@ -193,6 +200,19 @@
 
 /** @} */
 
+typedef enum
+{
+    RELEASE_KEY                     = 0x00,
+    CONSUMER_CTRL_PLAY              = 0x01,
+    CONSUMER_CTRL_ALCCC             = 0x02,
+    CONSUMER_CTRL_SCAN_NEXT_TRACK   = 0x04,
+    CONSUMER_CTRL_SCAN_PREV_TRACK   = 0x08,
+    CONSUMER_CTRL_VOL_DW            = 0x10,
+    CONSUMER_CTRL_VOL_UP            = 0x20,
+    CONSUMER_CTRL_AC_FORWARD        = 0x40,
+    CONSUMER_CTRL_AC_BACK           = 0x80,    
+} consumer_control_t;
+
 /** Abstracts buffer element */
 typedef struct hid_key_buffer
 {
@@ -237,16 +257,6 @@ static buffer_list_t     buffer_list;                               /**< List to
 
 static ble_uuid_t m_adv_uuids[] = {{BLE_UUID_HUMAN_INTERFACE_DEVICE_SERVICE, BLE_UUID_TYPE_BLE}};
 
-static uint8_t m_sample_key_press_scan_str[] = /**< Key pattern to be sent when the key press button has been pushed. */
-{
-    0x0b,       /* Key h */
-    0x08,       /* Key e */
-    0x0f,       /* Key l */
-    0x0f,       /* Key l */
-    0x12,       /* Key o */
-    0x28        /* Key Return */
-};
-
 static uint8_t m_caps_on_key_scan_str[] = /**< Key pattern to be sent when the output report has been written with the CAPS LOCK bit set. */
 {
     0x06,       /* Key C */
@@ -286,7 +296,6 @@ void assert_nrf_callback(uint16_t line_num, const uint8_t * p_file_name)
 {
     app_error_handler(DEAD_BEEF, line_num, p_file_name);
 }
-
 
 /**@brief Function for setting filtered whitelist.
  *
@@ -602,7 +611,7 @@ static void hids_init(void)
     ble_hids_feature_rep_init_t * p_feature_report;
     uint8_t                       hid_info_flags;
 
-    static ble_hids_inp_rep_init_t     input_report_array[1];
+    static ble_hids_inp_rep_init_t     input_report_array[2];
     static ble_hids_outp_rep_init_t    output_report_array[1];
     static ble_hids_feature_rep_init_t feature_report_array[1];
     static uint8_t                     report_map_data[] =
@@ -610,6 +619,7 @@ static void hids_init(void)
         0x05, 0x01,       // Usage Page (Generic Desktop)
         0x09, 0x06,       // Usage (Keyboard)
         0xA1, 0x01,       // Collection (Application)
+        0x85, 0x01,                     //     Report Id (1)
         0x05, 0x07,       // Usage Page (Key Codes)
         0x19, 0xe0,       // Usage Minimum (224)
         0x29, 0xe7,       // Usage Maximum (231)
@@ -648,18 +658,57 @@ static void hids_init(void)
         0x75, 0x08,       // Report Size (8 bit)
         0x95, 0x02,       // Report Count (2)
         0xB1, 0x02,       // Feature (Data, Variable, Absolute)
+    
+        0xC0,              // End Collection (Application)
+       
+        // Report ID 2: Advanced buttons
+        0x05, 0x0C,                     // Usage Page (Consumer)
+        0x09, 0x01,                     // Usage (Consumer Control)
+        0xA1, 0x01,                     // Collection (Application)
+        0x85, 0x02,                     //     Report Id (2)
+        0x15, 0x00,                     //     Logical minimum (0)
+        0x25, 0x01,                     //     Logical maximum (1)
+        0x75, 0x01,                     //     Report Size (1)
+        0x95, 0x01,                     //     Report Count (1)
 
-        0xC0              // End Collection (Application)
+        0x09, 0xCD,                     //     Usage (Play/Pause)
+        0x81, 0x02,                     //     Input (Data,Value,Relative,Bit Field)
+        0x0A, 0x83, 0x01,               //     Usage (AL Consumer Control Configuration)
+        0x81, 0x02,                     //     Input (Data,Value,Relative,Bit Field)
+        0x09, 0xB5,                     //     Usage (Scan Next Track)
+        0x81, 0x02,                     //     Input (Data,Value,Relative,Bit Field)
+        0x09, 0xB6,                     //     Usage (Scan Previous Track)
+        0x81, 0x02,                     //     Input (Data,Value,Relative,Bit Field)
+
+        0x09, 0xEA,                     //     Usage (Volume Down)
+        0x81, 0x02,                     //     Input (Data,Value,Relative,Bit Field)
+        0x09, 0xE9,                     //     Usage (Volume Up)
+        0x81, 0x02,                     //     Input (Data,Value,Relative,Bit Field)
+        0x0A, 0x25, 0x02,               //     Usage (AC Forward)
+        0x81, 0x02,                     //     Input (Data,Value,Relative,Bit Field)
+        0x0A, 0x24, 0x02,               //     Usage (AC Back)
+        0x81, 0x02,                     //     Input (Data,Value,Relative,Bit Field)
+        0xC0                            // End Collection
     };
 
-    memset((void *)input_report_array, 0, sizeof(ble_hids_inp_rep_init_t));
+    memset((void *)input_report_array, 0, 2*sizeof(ble_hids_inp_rep_init_t));
     memset((void *)output_report_array, 0, sizeof(ble_hids_outp_rep_init_t));
     memset((void *)feature_report_array, 0, sizeof(ble_hids_feature_rep_init_t));
 
     // Initialize HID Service
     p_input_report                      = &input_report_array[INPUT_REPORT_KEYS_INDEX];
     p_input_report->max_len             = INPUT_REPORT_KEYS_MAX_LEN;
-    p_input_report->rep_ref.report_id   = INPUT_REP_REF_ID;
+    p_input_report->rep_ref.report_id   = 1;
+    p_input_report->rep_ref.report_type = BLE_HIDS_REP_TYPE_INPUT;
+
+    p_input_report->sec.cccd_wr = SEC_JUST_WORKS;
+    p_input_report->sec.wr      = SEC_JUST_WORKS;
+    p_input_report->sec.rd      = SEC_JUST_WORKS;
+
+    // Initialize HID Service - ConsumerControl
+    p_input_report                      = &input_report_array[1];
+    p_input_report->max_len             = 1 ;
+    p_input_report->rep_ref.report_id   = 2;
     p_input_report->rep_ref.report_type = BLE_HIDS_REP_TYPE_INPUT;
 
     p_input_report->sec.cccd_wr = SEC_JUST_WORKS;
@@ -668,7 +717,7 @@ static void hids_init(void)
 
     p_output_report                      = &output_report_array[OUTPUT_REPORT_INDEX];
     p_output_report->max_len             = OUTPUT_REPORT_MAX_LEN;
-    p_output_report->rep_ref.report_id   = OUTPUT_REP_REF_ID;
+    p_output_report->rep_ref.report_id   = 0;
     p_output_report->rep_ref.report_type = BLE_HIDS_REP_TYPE_OUTPUT;
 
     p_output_report->sec.wr = SEC_JUST_WORKS;
@@ -676,7 +725,7 @@ static void hids_init(void)
 
     p_feature_report                      = &feature_report_array[FEATURE_REPORT_INDEX];
     p_feature_report->max_len             = FEATURE_REPORT_MAX_LEN;
-    p_feature_report->rep_ref.report_id   = FEATURE_REP_REF_ID;
+    p_feature_report->rep_ref.report_id   = 0;
     p_feature_report->rep_ref.report_type = BLE_HIDS_REP_TYPE_FEATURE;
 
     p_feature_report->sec.rd              = SEC_JUST_WORKS;
@@ -690,7 +739,7 @@ static void hids_init(void)
     hids_init_obj.error_handler                  = service_error_handler;
     hids_init_obj.is_kb                          = true;
     hids_init_obj.is_mouse                       = false;
-    hids_init_obj.inp_rep_count                  = 1;
+    hids_init_obj.inp_rep_count                  = 2;
     hids_init_obj.p_inp_rep_array                = input_report_array;
     hids_init_obj.outp_rep_count                 = 1;
     hids_init_obj.p_outp_rep_array               = output_report_array;
@@ -840,7 +889,7 @@ static uint32_t send_key_scan_press_release(ble_hids_t * p_hids,
 
     offset   = pattern_offset;
     data_len = pattern_len;
-
+    NRF_LOG_INFO("send_key_scan_press_release"); 
     do
     {
         // Reset the data buffer.
@@ -849,10 +898,10 @@ static uint32_t send_key_scan_press_release(ble_hids_t * p_hids,
         // Copy the scan code.
         memcpy(data + SCAN_CODE_POS + offset, p_key_pattern + offset, data_len - offset);
 
-        if (bsp_button_is_pressed(SHIFT_BUTTON_ID))
-        {
-            data[MODIFIER_KEY_POS] |= SHIFT_KEY_CODE;
-        }
+        //if (bsp_button_is_pressed(SHIFT_BUTTON_ID))
+        //{
+        //     data[MODIFIER_KEY_POS] |= SHIFT_KEY_CODE;
+        //}
 
         if (!m_in_boot_mode)
         {
@@ -883,6 +932,7 @@ static uint32_t send_key_scan_press_release(ble_hids_t * p_hids,
 
     return err_code;
 }
+
 
 
 /**@brief   Function for initializing the buffer queue used to key events that could not be
@@ -1390,46 +1440,109 @@ static void scheduler_init(void)
 static void bsp_event_handler(bsp_event_t event)
 {
     uint32_t         err_code;
-    static uint8_t * p_key = m_sample_key_press_scan_str;
-    static uint8_t   size  = 0;
-
+    consumer_control_t cmd;
+    static uint8_t p_keycode[] = { 0x11 };
+    static uint8_t n_keycode[] = { 0x13 };
+    static uint8_t alt_tab[8] =    { 0x04, 0x00, 0x2B, 0x00, 0x00, 0x00, 0x00, 0x00 }; // alt_tab
+    static uint8_t release[8] =    { 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00 }; // released
+    static uint8_t c_keycode[] = { 0x06 };
+    uint16_t actual_len;
+    
+    NRF_LOG_INFO("bsp_event_handler"); 
+    
     switch (event)
     {
         case BSP_EVENT_SLEEP:
-            sleep_mode_enter();
+            NRF_LOG_INFO("BSP_EVENT_SLEEP"); 
+            //sleep_mode_enter();
+            break;
+
+        case BSP_EVENT_CENTER_LONG:
+            NRF_LOG_INFO("BSP_EVENT_CENTER_LONG"); 
+            if (m_conn_handle != BLE_CONN_HANDLE_INVALID)
+            {
+              // send 'd' to change map direction in OsmAnd
+              //err_code = send_key_scan_press_release(&m_hids, d_keycode, 1, 0, &actual_len);
+              //APP_ERROR_CHECK(err_code);
+              err_code = ble_hids_inp_rep_send(&m_hids, 0, 8, alt_tab, m_conn_handle);
+              APP_ERROR_CHECK(err_code);
+              err_code = ble_hids_inp_rep_send(&m_hids, 0, 8, release, m_conn_handle);
+              APP_ERROR_CHECK(err_code);
+            }
             break;
 
         case BSP_EVENT_DISCONNECT:
-            err_code = sd_ble_gap_disconnect(m_conn_handle,
-                                             BLE_HCI_REMOTE_USER_TERMINATED_CONNECTION);
-            if (err_code != NRF_ERROR_INVALID_STATE)
+            NRF_LOG_INFO("BSP_EVENT_DISCONNECT, Taste P"); 
+            if (m_conn_handle != BLE_CONN_HANDLE_INVALID)
             {
-                APP_ERROR_CHECK(err_code);
+              // send 'p' for 'previous' in VLC playlist
+              err_code = send_key_scan_press_release(&m_hids, p_keycode, 1, 0, &actual_len);
+              APP_ERROR_CHECK(err_code);
             }
             break;
 
         case BSP_EVENT_WHITELIST_OFF:
-            if (m_conn_handle == BLE_CONN_HANDLE_INVALID)
+            NRF_LOG_INFO("BSP_EVENT_WHITELIST_OFF, Taste N"); 
+            if (m_conn_handle != BLE_CONN_HANDLE_INVALID)
             {
-                err_code = ble_advertising_restart_without_whitelist(&m_advertising);
-                if (err_code != NRF_ERROR_INVALID_STATE)
-                {
-                    APP_ERROR_CHECK(err_code);
-                }
+              // send 'n' for 'next' in VLC playlist
+              err_code = send_key_scan_press_release(&m_hids, n_keycode, 1, 0, &actual_len);
+              APP_ERROR_CHECK(err_code);
             }
             break;
 
-        case BSP_EVENT_KEY_0:
+        case BSP_EVENT_KEY_0:        
+            NRF_LOG_INFO("Plus press");     
             if (m_conn_handle != BLE_CONN_HANDLE_INVALID)
             {
-                keys_send(1, p_key);
-                p_key++;
-                size++;
-                if (size == MAX_KEYS_IN_ONE_REPORT)
-                {
-                    p_key = m_sample_key_press_scan_str;
-                    size  = 0;
-                }
+              cmd = CONSUMER_CTRL_VOL_UP;
+              err_code = ble_hids_inp_rep_send(&m_hids, 1, 1, (uint8_t*)&cmd, m_conn_handle);
+              APP_ERROR_CHECK(err_code);
+              cmd = RELEASE_KEY;
+              err_code = ble_hids_inp_rep_send(&m_hids, 1, 1, (uint8_t*)&cmd, m_conn_handle);
+              APP_ERROR_CHECK(err_code);
+
+              //err_code = ble_hids_inp_rep_send(&m_hids, 0, 8, zi_keycode, m_conn_handle);
+              //APP_ERROR_CHECK(err_code);
+              //cmd = RELEASE_KEY;
+              //err_code = ble_hids_inp_rep_send(&m_hids, 0, 8, release, m_conn_handle);
+              //APP_ERROR_CHECK(err_code);
+            }
+            break;
+
+        case BSP_EVENT_KEY_2:
+            NRF_LOG_INFO("Center press - Play/Pause"); 
+            if (m_conn_handle != BLE_CONN_HANDLE_INVALID)
+            {
+              cmd = CONSUMER_CTRL_PLAY;
+              err_code = ble_hids_inp_rep_send(&m_hids, 1, 1, (uint8_t*)&cmd, m_conn_handle);
+              APP_ERROR_CHECK(err_code);
+              cmd = RELEASE_KEY;
+              err_code = ble_hids_inp_rep_send(&m_hids, 1, 1, (uint8_t*)&cmd, m_conn_handle);
+              APP_ERROR_CHECK(err_code);
+              
+              // send 'c' to center map in OsmAnd
+              err_code = send_key_scan_press_release(&m_hids, c_keycode, 1, 0, &actual_len);
+              APP_ERROR_CHECK(err_code);
+            }
+            break;
+
+        case BSP_EVENT_KEY_1:
+            NRF_LOG_INFO("Minus press");
+            if (m_conn_handle != BLE_CONN_HANDLE_INVALID)
+            {
+              cmd = CONSUMER_CTRL_VOL_DW;
+              err_code = ble_hids_inp_rep_send(&m_hids, 1, 1, (uint8_t*)&cmd, m_conn_handle);
+              APP_ERROR_CHECK(err_code);
+              cmd = RELEASE_KEY;
+              err_code = ble_hids_inp_rep_send(&m_hids, 1, 1, (uint8_t*)&cmd, m_conn_handle);
+              APP_ERROR_CHECK(err_code);
+
+              //err_code = ble_hids_inp_rep_send(&m_hids, 0, 8, zo_keycode, m_conn_handle);
+              //APP_ERROR_CHECK(err_code);
+              //cmd = RELEASE_KEY;
+              //err_code = ble_hids_inp_rep_send(&m_hids, 0, 8, release, m_conn_handle);
+              //APP_ERROR_CHECK(err_code);
             }
             break;
 
